@@ -12,6 +12,9 @@ var startsWith = function(value, str) {
   return value.slice(0, str.length) === str;
 };
 
+//var sqlUpdateFields = function(row) {
+//};
+
 if (typeof(Function.prototype.override) !== 'function') {
   Function.prototype.override = function(fn) {
     var superFunction = this;
@@ -50,31 +53,47 @@ function upgrade(connection) {
     //   Returns: 'id = 5 AND year > '2010' AND (price BETWEEN '100' AND '200') AND level <= '3' AND sn LIKE '%str_' AND label = 'str' AND code IN (1,2,4,10,11)'
     //
     connection.where = function(where) {
-      var dbc = this,
-          result = '',
-          value, clause;
-      for (var key in where) {
-        value = where[key];
-        clause = key;
-        if (typeof(value) === 'number') clause = key + ' = ' + value;
-        else if (typeof(value) === 'string') {
-          /**/ if (startsWith(value, '>=')) clause = key + ' >= ' + dbc.escape(value.substring(2));
-          else if (startsWith(value, '<=')) clause = key + ' <= ' + dbc.escape(value.substring(2));
-          else if (startsWith(value, '<>')) clause = key + ' <> ' + dbc.escape(value.substring(2));
-          else if (startsWith(value, '>' )) clause = key + ' > '  + dbc.escape(value.substring(1));
-          else if (startsWith(value, '<' )) clause = key + ' < '  + dbc.escape(value.substring(1));
-          else if (startsWith(value, '(' )) clause = key + ' IN (' + value.substr(1, value.length-2).split(',').map(function(s) { return dbc.escape(s); }).join(',') + ')';
-          else if (value.indexOf('..') !== -1) {
-            value = value.split('..');
-            clause = '(' + key + ' BETWEEN ' + dbc.escape(value[0]) + ' AND ' + dbc.escape(value[1]) + ')';
-          } else if ((value.indexOf('*') !== -1) || (value.indexOf('?') !== -1)) {
-            value = value.replace(/\*/g, '%').replace(/\?/g, '_');
-            clause = key + ' LIKE ' + dbc.escape(value);
-          } else clause = key + ' = ' + dbc.escape(value);
-        }
-        if (result) result = result + ' AND ' + clause; else result = clause;
+      switch(typeof where) {
+      case 'boolean':
+          return where ? 'TRUE' : 'FALSE'
+
+      case 'string':
+      case 'number':
+          return where
+
+      case 'object':
+          var dbc = this,
+              result = '',
+              value, clause;
+          for (var key in where) {
+              value = where[key];
+              clause = key;
+              if (typeof(value) === 'number') clause = key + ' = ' + value;
+              else if (typeof(value) === 'string') {
+                  /**/ if (startsWith(value, 'SQL:')) clause = key + value.substring(4);
+                  else if (startsWith(value, '>=')) clause = key + ' >= ' + ('?'==value.substring(2) ? '?' : dbc.escape(value.substring(2)));
+                  else if (startsWith(value, '<=')) clause = key + ' <= ' + ('?'==value.substring(2) ? '?' : dbc.escape(value.substring(2)));
+                  else if (startsWith(value, '<>')) clause = key + ' <> ' + ('?'==value.substring(2) ? '?' : dbc.escape(value.substring(2)));
+                  else if (startsWith(value, '>' )) clause = key + ' > '  + ('?'==value.substring(1) ? '?' : dbc.escape(value.substring(1)));
+                  else if (startsWith(value, '<' )) clause = key + ' < '  + ('?'==value.substring(1) ? '?' : dbc.escape(value.substring(1)));
+                  else if (startsWith(value, '(' )) clause = key + ' IN (' + value.substr(1, value.length-2).split(',').map(function(s) { return dbc.escape(s); }).join(',') + ')';
+                  else if (value == 'NULL') clause = key + ' IS NULL';
+                  else if (value == 'NOT NULL') clause = key + ' IS NOT NULL';
+                  else if (value.indexOf('..') !== -1) {
+                      value = value.split('..');
+                      clause = '(' + key + ' BETWEEN ' + ('?'==value[0] ? '?' : dbc.escape(value[0])) + ' AND ' + ('?'==value[0] ? '?' : dbc.escape(value[1])) + ')';
+                  } else if ((value.indexOf('*') !== -1)) { //  || (value.indexOf('?') !== -1)
+                      value = value.replace(/\*/g, '%'); // .replace(/\?/g, '_');
+                      clause = key + ' LIKE ' + dbc.escape(value);
+                  } else clause = key + ' = ' + ('?'==value ? '?' : dbc.escape(value));
+              }
+              if (result) result = result + ' AND ' + clause; else result = clause;
+          }
+          return result;
+
+      default:
+         throw "Unsupported 'where' param type ["+(typeof where)+"]"
       }
-      return result;
     };
 
     // Order builder
@@ -124,7 +143,7 @@ function upgrade(connection) {
         values = [];
       }
       return this.queryRow(sql, values, function(err, res, fields) {
-        if (err) res = false; else res = res[Object.keys(res)[0]];
+        if (err || typeof res != 'object') res = false; else res = res[Object.keys(res)[0]];
         callback(err, res, fields);
       });
     };
@@ -160,9 +179,10 @@ function upgrade(connection) {
         var result = {};
         if (err) result = false; else {
           var row;
+          var key = fields[0].name;
           for (var i in res) {
             row = res[i];
-            result[row[Object.keys(row)[0]]] = row;
+            result[row[key]] = row;
           }
         }
         callback(err, result, fields);
@@ -178,11 +198,14 @@ function upgrade(connection) {
       }
       return this.query(sql, values, function(err, res, fields) {
         var result = {};
-        if (err) result = false; else {
+        //if (err) result = false; else {
+        if (err || !res || !res.length) result = false; else {
           var row;
+          var key = fields[0].name; // Object.keys(row)[0];
+          var val = fields[1].name; // Object.keys(row)[1];
           for (var i in res) {
             row = res[i];
-            result[row[Object.keys(row)[0]]] = row[Object.keys(row)[1]];
+            result[row[key]] = row[val];
           }
         }
         callback(err, result, fields);
@@ -227,7 +250,7 @@ function upgrade(connection) {
     // INSERT SQL statement generator
     //   callback(err, id or false)
     //
-    connection.insert = function(table, row, callback) {
+    connection.insertRow = function(table, row, callback) {
       var dbc = this;
       dbc.fields(table, function(err, fields) {
         if (!err) {
@@ -238,7 +261,11 @@ function upgrade(connection) {
             field = fields[i];
             if (rowKeys.indexOf(field)!=-1) {
               columns.push(field);
-              values.push(dbc.escape(row[field]));
+              var value = row[field];
+              value = (typeof value == 'string') && startsWith(value, 'SQL:')
+                  ? value.substring(4) : dbc.escape(value);
+              values.push(value);
+              //values.push(dbc.escape(row[field]));
             }
           }
           values = values.join(', ');
@@ -249,6 +276,34 @@ function upgrade(connection) {
         } else callback(new Error('Error: Table "' + table + '" not found'), false);
       });
     };
+
+      connection.insertMulti = function(table, rows, callback) {
+          var dbc = this;
+          dbc.fields(table, function(err, fields) {
+              if (!err) {
+                  fields = Object.keys(fields);
+                  var queries = [], row, rowKeys;
+                  for (var j in rows) {
+                      row = rows[j];
+                      rowKeys = Object.keys(row);
+                      var values = [], columns = [], field;
+                      for (var i in fields) {
+                          field = fields[i];
+                          if (rowKeys.indexOf(field) != -1) {
+                              columns.push(field);
+                              values.push(dbc.escape(row[field]));
+                          }
+                      }
+                      queries.push('INSERT INTO ' + escapeIdentifier(table)
+                                    + ' (' + columns.join(', ') + ') VALUES (' + values.join(', ') + ')');
+                      //TODO: check if column sets are the same in all rows and then use single list of fields in for all rows
+                  }
+                  var query = dbc.query(queries.join('; '), [], function(err, res) {
+                      callback(err, res ? res : false, query);
+                  });
+              } else callback(new Error('Error: Table "' + table + '" not found'), false);
+          });
+      };
 
     // UPDATE SQL statement generator
     //
@@ -271,7 +326,8 @@ function upgrade(connection) {
             }
             if (where) {
               data = data.join(', ');
-              var query = dbc.query('UPDATE ' + escapeIdentifier(table) + ' SET ' + data + ' WHERE ' + where, [], function(err, res) {
+              var sql = 'UPDATE ' + escapeIdentifier(table) + ' SET ' + data + ' WHERE ' + where
+              var query = dbc.query(sql, [], function(err, res) {
                 callback(err, res ? res.changedRows : false, query);
               });
             } else {
@@ -284,10 +340,25 @@ function upgrade(connection) {
       } else {
         where = this.where(where);
         if (where) {
-          var data = [];
-          for (var i in row) data.push(i + '=' + dbc.escape(row[i]));
-          data = data.join(', ');
-          var query = dbc.query('UPDATE ' + escapeIdentifier(table) + ' SET ' + data + ' WHERE ' + where, [], function(err, res) {
+          var data;
+          if (typeof(row) === 'string') {
+              data = row;
+          } else {
+            data = [];
+            for (var fld in row) {
+                var value = row[fld];
+                if (typeof(value) === 'number') ;// do nothing;
+                else if (typeof(value) === 'string') {
+                    if (value == 'NULL') value = 'NULL';
+                    else if (startsWith(value, 'SQL:')) value = value.substring(4);
+                    else value = dbc.escape(value);
+                }
+                data.push(fld + '=' + value);
+            }
+            data = data.join(', ');
+          }
+          var sql = 'UPDATE ' + escapeIdentifier(table) + ' SET ' + data + ' WHERE ' + where
+          var query = dbc.query(sql, [], function(err, res) {
             callback(err, res ? res.changedRows : false, query);
           });
         } else {
@@ -315,12 +386,13 @@ function upgrade(connection) {
           if (rowKeys.indexOf(uniqueKey)!=-1) {
             dbc.queryValue('SELECT count(*) FROM ' + escapeIdentifier(table) + ' WHERE ' + uniqueKey + '=' + dbc.escape(row[uniqueKey]), [], function(err, count) {
               if (count==1) dbc.update(table, row, callback);
-              else dbc.insert(table, row, callback);
+              else dbc.insertRow(table, row, callback);
             });
           } else {
-            var e = new Error('Error: can not insert or update table "' + table + '", primary or unique key is not specified');
-            dbc.emit('error', e);
-            callback(e, false);
+            dbc.insertRow(table, row, callback);
+            //var e = new Error('Error: can not insert or update table "' + table + '", primary or unique key is not specified');
+            //dbc.emit('error', e);
+            //callback(e, false);
           }
         } else callback(new Error('Error: Table "' + table + '" not found'), false);
       });
