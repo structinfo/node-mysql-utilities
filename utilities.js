@@ -69,6 +69,8 @@ function upgrade(connection) {
               value = where[key];
               clause = key;
               if (typeof(value) === 'number') clause = key + ' = ' + value;
+              else if (typeof(value) === 'object'
+                    && Object.prototype.toString.call(value) === '[object Array]') clause = key + ' IN (' + value.map(function(s) { return dbc.escape(s); }).join(',') + ')';
               else if (typeof(value) === 'string') {
                   /**/ if (startsWith(value, 'SQL:')) clause = key + value.substring(4);
                   else if (startsWith(value, '>=')) clause = key + ' >= ' + ('?'==value.substring(2) ? '?' : dbc.escape(value.substring(2)));
