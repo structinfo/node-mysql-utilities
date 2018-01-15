@@ -112,7 +112,23 @@ function upgrade(connection) {
       if (result.length) return result.join();
       else return '';
     };
-    
+
+    // SQL value builder
+    //TODO: maybe format value to type of field
+    connection.formatValue = function(val, allowSQL) {
+      var dbc = this;
+
+      if (typeof(val) === 'number') return val; // do nothing;
+
+      if (typeof(val) === 'string') {
+        if (val == 'NULL') return 'NULL';
+        if (allowSQL && startsWith(val, 'SQL:')) return val.substring(4);
+        return dbc.escape(val); // default processing
+      }
+
+      return dbc.escape(String(val)); // default processing
+    };
+
     // Record count
     //
     connection.count = function(table, where, callback) {
@@ -263,11 +279,7 @@ function upgrade(connection) {
             field = fields[i];
             if (rowKeys.indexOf(field)!=-1) {
               columns.push(field);
-              var value = row[field];
-              value = (typeof value == 'string') && startsWith(value, 'SQL:')
-                  ? value.substring(4) : dbc.escape(value);
-              values.push(value);
-              //values.push(dbc.escape(row[field]));
+              values.push(dbc.formatValue(row[field], true));
             }
           }
           values = values.join(', ');
@@ -280,44 +292,45 @@ function upgrade(connection) {
     };
 
       connection.insertMulti = function(table, rows, callback) {
-          var dbc = this;
-          dbc.fields(table, function(err, fields) {
-              if (!err) {
-                  fields = Object.keys(fields);
-                  var queries = [], row, rowKeys;
-                  for (var j in rows) {
-                      row = rows[j];
-                      rowKeys = Object.keys(row);
-                      var values = [], columns = [], field;
-                      for (var i in fields) {
-                          field = fields[i];
-                          if (rowKeys.indexOf(field) != -1) {
-                              columns.push(field);
-                              values.push(dbc.escape(row[field]));
-                          }
-                      }
-                      queries.push('INSERT INTO ' + escapeIdentifier(table)
-                                    + ' (' + columns.join(', ') + ') VALUES (' + values.join(', ') + ')');
-                      //TODO: check if column sets are the same in all rows and then use single list of fields in for all rows
-                  }
-                  var query = dbc.query(queries.join('; '), [], function(err, res) {
-                      callback(err, res ? res : false, query);
-                  });
-              } else callback(new Error('Error: Table "' + table + '" not found'), false);
-          });
+        var dbc = this;
+        dbc.fields(table, function(err, fields) {
+          if (!err) {
+            fields = Object.keys(fields);
+            var queries = [], row, rowKeys;
+            for (var j in rows) {
+              row = rows[j];
+              rowKeys = Object.keys(row);
+              var values = [], columns = [], field;
+              for (var i in fields) {
+                field = fields[i];
+                if (rowKeys.indexOf(field) != -1) {
+                  columns.push(field);
+                  values.push(dbc.formatValue(row[field], true));
+                }
+              }
+              queries.push('INSERT INTO ' + escapeIdentifier(table)
+                            + ' (' + columns.join(', ') + ') VALUES (' + values.join(', ') + ')');
+              //TODO: check if column sets are the same in all rows and then use single list of fields in for all rows
+              //TODO: if there are a lot of rows to insert then split into some inserts
+            }
+            var query = dbc.query(queries.join('; '), [], function(err, res) {
+              callback(err, res ? res : false, query);
+            });
+          } else callback(new Error('Error: Table "' + table + '" not found'), false);
+        });
       };
 
     // UPDATE SQL statement generator
     //
     connection.update = function(table, row, where, callback) {
       var dbc = this;
-      if (typeof(where) === 'function') {
-        callback = where;
-        dbc.fields(table, function(err, fields) {
-          if (!err) {
-            var where = '', data = [],
-                rowKeys = Object.keys(row),
-                field, fieldName;
+      var data = [],
+          rowKeys, field, fieldName;
+      dbc.fields(table, function(err, fields) {
+        if (!err) {
+          if (typeof(where) === 'function') {
+            callback = where;
+            rowKeys = Object.keys(row);
             for (var i in fields) {
               field = fields[i];
               fieldName = field['Field'];
@@ -337,38 +350,35 @@ function upgrade(connection) {
               dbc.emit('error', e);
               callback(e, false);
             }
-          } else callback(new Error('Error: Table "' + table + '" not found'), false);
-        });
-      } else {
-        where = this.where(where);
-        if (where) {
-          var data;
-          if (typeof(row) === 'string') {
-              data = row;
           } else {
-            data = [];
-            for (var fld in row) {
-                var value = row[fld];
-                if (typeof(value) === 'number') ;// do nothing;
-                else if (typeof(value) === 'string') {
-                    if (value == 'NULL') value = 'NULL';
-                    else if (startsWith(value, 'SQL:')) value = value.substring(4);
-                    else value = dbc.escape(value);
+            where = dbc.where(where);
+            if (where) {
+              if (typeof(row) === 'string') {
+                data = row;
+              } else {
+                data = [];
+                rowKeys = Object.keys(row);
+                for (var i in fields) {
+                  field = fields[i];
+                  fieldName = field['Field'];
+                  if (rowKeys.indexOf(fieldName)!=-1) {
+                    data.push(fieldName + '=' + dbc.formatValue(row[fieldName], true));
+                  }
                 }
-                data.push(fld + '=' + value);
+                data = data.join(', ');
+              }
+              var sql = 'UPDATE ' + escapeIdentifier(table) + ' SET ' + data + ' WHERE ' + where;
+              var query = dbc.query(sql, [], function(err, res) {
+                callback(err, res ? res.changedRows : false, query);
+              });
+            } else {
+              var e = new Error('Error: can update "' + table + '", because "where" parameter is empty');
+              dbc.emit('error', e);
+              callback(e, false);
             }
-            data = data.join(', ');
           }
-          var sql = 'UPDATE ' + escapeIdentifier(table) + ' SET ' + data + ' WHERE ' + where
-          var query = dbc.query(sql, [], function(err, res) {
-            callback(err, res ? res.changedRows : false, query);
-          });
-        } else {
-          var e = new Error('Error: can update "' + table + '", because "where" parameter is empty');
-          dbc.emit('error', e);
-          callback(e, false);
-        }
-      }
+        } else callback(new Error('Error: Table "' + table + '" not found'), false);
+      });
     };
 
     // INSERT OR UPDATE SQL statement generator
