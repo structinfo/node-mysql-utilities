@@ -120,8 +120,10 @@ function upgrade(connection) {
 
       if (typeof(val) === 'number') return val; // do nothing;
 
+      if (!val) return 'NULL';
+
       if (typeof(val) === 'string') {
-        if (val == 'NULL') return 'NULL';
+        if (val === 'NULL' || val === 'null' || val === 'Null') return 'NULL';
         if (allowSQL && startsWith(val, 'SQL:')) return val.substring(4);
         return dbc.escape(val); // default processing
       }
@@ -330,6 +332,7 @@ function upgrade(connection) {
         if (!err) {
           if (typeof(where) === 'function') {
             callback = where;
+            where = null;
             rowKeys = Object.keys(row);
             for (var i in fields) {
               field = fields[i];
